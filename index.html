@@ -1,121 +1,65 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Two-Tower Recommender — Shallow vs Deep (Comparison)</title>
-
-  <!-- TensorFlow.js -->
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.11.0/dist/tf.min.js"></script>
-  <!-- D3 -->
-  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
-
-  <style>
-    :root{--accent:#2c7be5;--muted:#7d8a97;--bg:#f6f8fb;--card:#fff}
-    body{font-family:Inter, Roboto, Arial, sans-serif;background:var(--bg);margin:18px;color:#1f2d3d}
-    .container{max-width:1200px;margin:0 auto}
-    .grid{display:grid;grid-template-columns:1fr 420px;gap:18px}
-    .card{background:var(--card);padding:16px;border-radius:10px;box-shadow:0 6px 18px rgba(20,30,40,0.06)}
-    h1{margin:0 0 12px}
-    label{display:block;font-size:13px;color:var(--muted);margin-bottom:6px}
-    select,input[type=file],button{font-size:14px;padding:8px;border-radius:8px;border:1px solid #d7e0ea}
-    button{background:var(--accent);color:#fff;border:none;cursor:pointer}
-    button:disabled{opacity:.6;cursor:not-allowed}
-    .log{height:140px;overflow:auto;background:#0b1220;color:#cfe9ff;padding:10px;border-radius:6px;font-family:monospace;font-size:12px}
-    #visualization-container{width:100%;height:420px}
-    .progress-wrapper{background:#eef3fb;border-radius:8px;height:12px;overflow:hidden;margin-top:8px}
-    .progress{height:100%;background:linear-gradient(90deg,var(--accent),#57a3ff);width:0%}
-    .small{font-size:12px;color:var(--muted)}
-    .controls-row{display:flex;gap:8px;align-items:center}
-    .comparison-chart{height:180px;margin-top:10px}
-    .badge{display:inline-block;padding:4px 8px;border-radius:999px;background:#eef7ff;color:#1366d6;margin-left:8px}
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Two-Tower Movie Recommender (TF.js, MovieLens 100K)</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.x/dist/tf.min.js"></script>
+    <style>
+        body { font-family: sans-serif; max-width: 1200px; margin: auto; padding: 20px; background-color: #f4f4f9; }
+        h1 { color: #333; }
+        button { padding: 10px 20px; margin: 5px; background-color: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:hover { background-color: #0056b3; }
+        .container { display: flex; flex-wrap: wrap; gap: 20px; margin-top: 20px; }
+        .panel { flex: 1 1 45%; min-width: 400px; background: white; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        canvas { border: 1px solid #ccc; display: block; margin-top: 10px; width: 100%; height: 300px; }
+        #results-container { margin-top: 30px; }
+        #results-container table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        #results-container th, #results-container td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        #results-container th { background-color: #eef; }
+        .instructions { background-color: #fff3cd; border-left: 5px solid #ffc107; padding: 10px; margin-top: 20px; color: #856404; }
+    </style>
 </head>
 <body>
-  <div class="container">
-    <h1>Two-Tower Recommender — Shallow vs Deep Comparison 🔨🤖🔧</h1>
+    <h1>🎬 Two-Tower Movie Recommender (Client-Side TF.js)</h1>
+    <p>MovieLens 100K Dataset: Retrieval Model Demo</p>
 
-    <div class="grid">
-      <div class="card">
-        <label>Data (upload CSVs or load defaults)</label>
-        <div style="display:flex;gap:8px">
-          <div style="flex:1">
-            <input id="interactions-file" type="file" accept=".csv,.txt" />
-            <div class="small">Interactions CSV (userId,itemId,rating[,timestamp])</div>
-          </div>
-          <div style="flex:1">
-            <input id="items-file" type="file" accept=".csv,.txt" />
-            <div class="small">Items CSV (itemId,title,...)</div>
-          </div>
-        </div>
-        <div style="margin-top:8px;display:flex;gap:8px">
-          <button id="load-defaults">Load defaults (u.data / u.item)</button>
-          <button id="reset-app">Reset</button>
-        </div>
-
-        <hr style="margin:12px 0">
-
-        <div style="display:flex;gap:8px;align-items:center">
-          <div style="flex:1">
-            <label for="user-select">Select User for Recommendations</label>
-            <select id="user-select" disabled></select>
-          </div>
-
-          <div style="width:170px">
-            <label>&nbsp;</label>
-            <div style="display:flex;gap:8px">
-              <button id="train-shallow" disabled>Train Shallow</button>
-              <button id="train-deep" disabled>Train Deep</button>
-            </div>
-          </div>
-        </div>
-
-        <div style="margin-top:10px">
-          <div class="small">Comparison: <button id="train-both" disabled>Train Both (Shallow → Deep)</button> <span class="badge">Epochs per model: <span id="epochs-count">10</span></span></div>
-        </div>
-
-        <div style="margin-top:12px">
-          <div style="display:flex;justify-content:space-between;align-items:center">
-            <div>Epoch: <strong id="epoch-counter">0</strong></div>
-            <div>Loss: <strong id="loss-display">N/A</strong></div>
-            <div id="train-state" class="small">State: Idle</div>
-          </div>
-
-          <div class="progress-wrapper">
-            <div id="progress-bar" class="progress"></div>
-          </div>
-          <div class="small" style="margin-top:6px">Batch progress: <span id="batch-progress">0%</span></div>
-
-          <div style="margin-top:10px">
-            <label>Training Log</label>
-            <div id="training-log" class="log"></div>
-          </div>
-        </div>
-
-        <div style="margin-top:12px">
-          <label>Loss Comparison (per epoch)</label>
-          <div id="comparison-chart" class="comparison-chart"></div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div style="display:flex;justify-content:space-between;align-items:center">
-          <label>Recommendations for User <span id="current-user-id">N/A</span></label>
-          <div class="small">Top results (filtered)</div>
-        </div>
-
-        <ul id="recommendation-list" style="margin-top:8px;padding-left:14px"></ul>
-
-        <hr style="margin:12px 0">
-
-        <label>Item Embedding Visualization (PCA)</label>
-        <div id="viz-status" class="small">Train a model then click Update Viz.</div>
-        <div id="visualization-container"></div>
-      </div>
+    <div id="controls">
+        <button id="load-data-btn">1. Load Data</button>
+        <button id="train-btn" disabled>2. Train Model</button>
+        <button id="test-btn" disabled>3. Test Recommendations</button>
     </div>
-  </div>
 
-  <script src="two-tower.js"></script>
-  <script src="app.js"></script>
+    <p id="status-log">Status: Awaiting action...</p>
+
+    <div class="container">
+        <div class="panel">
+            <h2>Training Loss</h2>
+            <p>Live loss chart (In-batch sampled softmax)</p>
+            <canvas id="loss-chart" width="800" height="300"></canvas>
+        </div>
+        <div class="panel">
+            <h2>Item Embedding Projection (PCA)</h2>
+            <p>2D projection of a sample of item embeddings after training.</p>
+            <canvas id="projection-chart" width="800" height="300"></canvas>
+        </div>
+    </div>
+
+    <div id="results-container">
+        <h2>Recommendation Results</h2>
+        <p>A random user's historical top-10 vs. the model's top-10 recommendations (excluding rated items).</p>
+    </div>
+
+    <div class="instructions">
+        <strong>Usability Tips:</strong>
+        <ul>
+            <li>Ensure `data/u.data` and `data/u.item` are accessible relative to this file.</li>
+            <li>Training (`epochs=10`, `batchSize=512`) might take 1-3 minutes depending on your CPU. The loss chart updates live.</li>
+            <li>To host this statically (e.g., on GitHub Pages), place the files in a repository structure: `/index.html`, `/app.js`, `/two-tower.js`, and `/data/u.data`, `/data/u.item`.</li>
+        </ul>
+    </div>
+
+    <script src="two-tower.js"></script>
+    <script src="app.js"></script>
 </body>
 </html>
