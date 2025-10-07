@@ -23,10 +23,14 @@ class TwoTowerModel {
     }
     
     userForward(userIndices) {
+        // userIndices: [B]
+        // Output: [B, D]
         return tf.gather(this.userEmbeddings, userIndices);
     }
     
     itemForward(itemIndices) {
+        // itemIndices: [B]
+        // Output: [B, D]
         return tf.gather(this.itemEmbeddings, itemIndices);
     }
     
@@ -39,46 +43,58 @@ class TwoTowerModel {
                 const userEmbs = this.userForward(tf.tensor1d(userIndices, 'int32')); // [B, D]
                 const itemEmbs = this.itemForward(tf.tensor1d(itemIndices, 'int32')); // [B, D]
                 
-                // 2. Compute Logits Matrix: L = U * I_T+
-                // [B, D] * [D, B] -> [B, B]. Diagonal is positive score, off-diagonal are negatives.
-                const logits = tf.matMul(userEmbs, itemEmbs, false, true);
+                // 2. Positive Scores (B x D) * (D x B) = B x B
+                // We only care about the diagonal (B x 1)
+                const positiveScores = tf.sum(tf.mul(userEmbs, itemEmbs), 1); // [B]
+
+                // 3. Negative Scores (In-batch sampling)
+                // (B x D) * (D x B) = B x B. All pair-wise scores within the batch.
+                // Corrected: Use transposeB=true for A * B_transpose
+                const negativeScores = tf.matMul(userEmbs, itemEmbs, false, true); // [B, B]
                 
-                // 3. Create Labels: Identity matrix (one-hot encoding of the diagonal)
-                const batchSize = userIndices.length;
-                const labels = tf.oneHot(
-                    tf.range(0, batchSize, 1, 'int32'), 
-                    batchSize
-                );
+                // 4. Sampled Softmax Loss (The objective is to maximize positiveScore and minimize all others)
+                // The loss is for the positive item in each row of the matrix
+                // Formula: -log(exp(posScore) / sum(exp(allScores)))
+                // = -posScore + log(sum(exp(allScores))) -> this is log-sum-exp
                 
-                // 4. Compute Softmax Cross Entropy Loss
-                const loss = tf.losses.softmaxCrossEntropy(labels, logits);
+                // Reshape positiveScores to [B, 1] for concat
+                const positiveScoresReshaped = positiveScores.expandDims(1);
+
+                // Concatenate the positive scores and negative scores
+                // This gives a [B, B+1] tensor of scores for the positive item and B negative items
+                const allScores = tf.concat([positiveScoresReshaped, negativeScores], 1); // [B, B+1]
+
+                // The true index for the positive score in each row is 0
+                const labels = tf.zeros([allScores.shape[0]], 'int32'); // [B]
+
+                // Compute the Sparse Softmax Cross-Entropy Loss
+                const loss = tf.losses.sparseSoftmaxCrossEntropy(labels, allScores);
+                
                 return loss;
             });
-        }, true, [this.userEmbeddings, this.itemEmbeddings]);
+        }, [this.userEmbeddings, this.itemEmbeddings]);
 
-        const lossValue = await lossTensor.data();
-        lossTensor.dispose();
-        return lossValue[0];
-    }
-    
-    getUserEmbedding(userIndex) {
-        return tf.tidy(() => {
-            return this.userForward([userIndex]).squeeze(); // [D]
-        });
+        // This minimizes loss, applying gradients to this.userEmbeddings and this.itemEmbeddings.
+        // The lossTensor is what we want to return for logging.
+        return lossTensor;
     }
     
     /**
-     * Computes the score for a user embedding against all item embeddings efficiently.
+     * Computes the score (dot product) between a user embedding and all item embeddings.
+     * @param {tf.Tensor1D} userEmbedding - A tensor of shape [D].
+     * @returns {Promise<Float32Array>} An array of scores, length N_items.
      */
-    async getScoresForAllItems(userEmbedding) {
+    async scoreAllItems(userEmbedding) {
         return await tf.tidy(() => {
-            // userEmbedding: [D] -> uEmb: [D, 1]
+            // userEmbedding: [D] -> uEmb: [D, 1] (Transposing for matrix multiplication)
             const uEmb = userEmbedding.expandDims(1); 
             
             // Scores = [N_items, D] * [D, 1] -> [N_items, 1]
+            // tf.matMul(A, B) computes A * B
             const scoresTensor = tf.matMul(this.itemEmbeddings, uEmb); 
             
-            return scoresTensor.squeeze().dataSync(); // Return as a standard JS array
+            // Squeeze to [N_items] and return as a standard JS array
+            return scoresTensor.squeeze().dataSync(); 
         });
     }
     
@@ -88,25 +104,35 @@ class TwoTowerModel {
     async computePCAProjection(numSamples = 1000) {
         return await tf.tidy(async () => {
             let itemEmbs = this.itemEmbeddings;
-            let sampleIndices = tf.randomUniform([numSamples], 0, this.numItems, 'int32');
+            let numAvailableItems = this.numItems;
+            
+            // Adjust sample size if there aren't enough items
+            if (numAvailableItems < numSamples) {
+                numSamples = numAvailableItems;
+            }
+
+            // Generate random indices to sample
+            let sampleIndices = tf.randomUniform([numSamples], 0, numAvailableItems, 'int32');
             let sampleEmbs = tf.gather(itemEmbs, sampleIndices);
 
             // Center the data (crucial for correct PCA)
-            const mean = sampleEmbs.mean(0);
-            const centered = sampleEmbs.sub(mean);
+            const mean = sampleEmbs.mean(0); // [D]
+            const centered = sampleEmbs.sub(mean); // [N_sample, D]
 
-            // Compute SVD
-            const { V } = tf.linalg.svd(centered, true);
+            // Compute SVD: centered = U * S * V^T
+            // We use the full SVD which returns {u, v, s} where v is the right singular vectors (V in the formula).
+            const { v } = tf.linalg.svd(centered); // v is [D, D] (the V matrix)
             
-            // Get the first two principal components
-            const principalComponents = V.slice([0, 0], [this.embeddingDim, 2]);
+            // Get the first two principal components (the first two columns of V)
+            // slice([startRow, startCol], [height, width])
+            const principalComponents = v.slice([0, 0], [this.embeddingDim, 2]); // [D, 2]
 
-            // Project the embeddings
+            // Project the embeddings: centered * principalComponents = [N_sample, D] * [D, 2] -> [N_sample, 2]
             const projected = centered.matMul(principalComponents);
             
             return { 
-                projection: await projected.array(), 
-                sampleIndices: await sampleIndices.array() 
+                projection: await projected.array(), // [[x1, y1], [x2, y2], ...]
+                sampleIndices: await sampleIndices.data() // indices corresponding to the projection points
             };
         });
     }
