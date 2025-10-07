@@ -2,7 +2,6 @@
 
 class MovieLensApp {
     constructor() {
-        // Data and Indexing
         this.interactions = []; 
         this.indexedInteractions = []; 
         this.items = new Map(); 
@@ -13,7 +12,6 @@ class MovieLensApp {
         this.userTopRated = new Map(); 
         this.model = null;
         
-        // Configuration
         this.config = {
             maxInteractions: 80000, 
             embeddingDim: 32,
@@ -22,7 +20,6 @@ class MovieLensApp {
             learningRate: 0.001
         };
         
-        // UI/Training State
         this.lossHistory = [];
         this.isTraining = false;
         this.lossChartCtx = document.getElementById('lossChart').getContext('2d');
@@ -50,7 +47,7 @@ class MovieLensApp {
         this.updateStatus('Loading and parsing data...');
         
         try {
-            // Fetch data from relative paths (requires data/u.data and data/u.item)
+            // Fetch data from relative paths (data/u.data and data/u.item)
             const [interactionsResponse, itemsResponse] = await Promise.all([
                 fetch('data/u.data'),
                 fetch('data/u.item')
@@ -64,8 +61,8 @@ class MovieLensApp {
             itemsText.trim().split('\n').forEach(line => {
                 const fields = line.split('|');
                 const itemId = parseInt(fields[0]);
-                
                 const titleMatch = fields[1].match(/(.*) \((\d{4})\)$/);
+                
                 let title = fields[1];
                 let year = 'N/A';
                 if (titleMatch) {
@@ -78,13 +75,13 @@ class MovieLensApp {
 
             // --- Parse u.data (Interactions) and Build Indexers ---
             const rawInteractions = interactionsText.trim().split('\n')
-                .slice(0, this.config.maxInteractions) // Limit size
+                .slice(0, this.config.maxInteractions) 
                 .map(line => {
                     const [userId, itemId, rating, timestamp] = line.split('\t').map(Number);
                     return { userId, itemId, rating, timestamp };
                 });
 
-            // Build 0-based unique indexers
+            // Build 0-based unique indexers (Maps for forward lookup, Arrays for reverse lookup)
             this.userIds = [...new Set(rawInteractions.map(i => i.userId))];
             this.itemIds = [...new Set(rawInteractions.map(i => i.itemId))].filter(id => this.items.has(id));
             
@@ -122,7 +119,6 @@ class MovieLensApp {
         this.setControls(true, false);
         document.getElementById('results-container').innerHTML = '';
         
-        // Initialize model
         this.model = new TwoTowerModel(
             this.userIds.length, 
             this.itemIds.length, 
@@ -131,7 +127,7 @@ class MovieLensApp {
         );
         
         this.lossHistory = [];
-        this.plotLoss([]); // Clear chart
+        this.plotLoss([]); 
 
         const { batchSize, epochs } = this.config;
         const numInteractions = this.indexedInteractions.length;
@@ -158,6 +154,7 @@ class MovieLensApp {
                 const loss = await this.model.trainStep(batchUserIdx, batchItemIdx);
                 totalLoss += loss;
                 
+                // Yield control to the UI for responsiveness
                 if (b % 50 === 0 || b === numBatches - 1) {
                     this.updateStatus(`Epoch ${epoch + 1}/${epochs} - Batch ${b + 1}/${numBatches}. Current Loss: ${loss.toFixed(6)}`);
                     await tf.nextFrame(); 
@@ -256,7 +253,8 @@ class MovieLensApp {
 
         projection.forEach(p => {
             const x = padding + ((p[0] - minX) / xRange) * plotWidth;
-            const y = padding + plotHeight * (1 - (p[1] - minY) / yRange);
+            // Flip Y-axis:
+            const y = padding + plotHeight * (1 - (p[1] - minY) / yRange); 
             
             ctx.beginPath();
             ctx.arc(x, y, pointSize, 0, 2 * Math.PI);
@@ -330,13 +328,14 @@ class MovieLensApp {
 
         // 4. Compute scores against all items
         const allScores = await this.model.getScoresForAllItems(userEmbedding); 
-        userEmbedding.dispose(); 
+        userEmbedding.dispose(); // CRITICAL FIX: Clean up tensor after use
 
         // 5. Build and filter recommendations
         const recommendations = [];
         for (let i = 0; i < allScores.length; i++) {
             const originalItemId = this.itemIds[i];
             
+            // Filter out items the user has already rated (required)
             if (!alreadyRatedItemIds.has(originalItemId)) {
                 recommendations.push({
                     itemId: originalItemId,
@@ -433,16 +432,18 @@ class MovieLensApp {
     }
 }
 
+// Initialize app when page loads
 let app;
 document.addEventListener('DOMContentLoaded', () => {
     if (typeof tf === 'undefined') {
         document.getElementById('status').textContent = 'Error: TensorFlow.js not loaded. Check network connection.';
         return;
     }
+    // Prioritize WebGL for performance
     tf.setBackend('webgl').then(() => {
         app = new MovieLensApp();
     }).catch(e => {
-        console.warn("WebGL backend failed, falling back to CPU.", e);
+        console.warn("WebGL backend failed, falling back to CPU. Performance may be degraded.", e);
         tf.setBackend('cpu');
         app = new MovieLensApp();
     });
