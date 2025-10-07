@@ -53,8 +53,8 @@ class MovieLensApp {
         try {
             // FIX: Ensure correct relative paths. The files MUST be in a 'data/' subdirectory.
             const [interactionsResponse, itemsResponse] = await Promise.all([
-                fetch('data/u.data'), // Ensure this path is correct
-                fetch('data/u.item')  // Ensure this path is correct
+                fetch('u.data'), // Ensure this path is correct
+                fetch('u.item')  // Ensure this path is correct
             ]);
 
             if (!interactionsResponse.ok || !itemsResponse.ok) {
@@ -119,7 +119,7 @@ class MovieLensApp {
 
         } catch (error) {
             console.error('Data Loading Error:', error);
-            this.updateStatus(`**ERROR:** Could not load data. Ensure 1) You are running a local server (not file://), and 2) **data/u.data** and **data/u.item** exist.`);
+            this.updateStatus(`**ERROR:** Could not load data. Ensure 1) You are running a local server (not file://), and 2) **u.data** and **u.item** exist.`);
             this.setControls(false, false);
         }
     }
