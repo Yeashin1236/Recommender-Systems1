@@ -53,7 +53,6 @@ class TwoTowerModel {
                 const negativeScores = tf.matMul(userEmbs, itemEmbs, false, true); // [B, B]
                 
                 // 4. Sampled Softmax Loss (The objective is to maximize positiveScore and minimize all others)
-                // The loss is for the positive item in each row of the matrix
                 // Formula: -log(exp(posScore) / sum(exp(allScores)))
                 // = -posScore + log(sum(exp(allScores))) -> this is log-sum-exp
                 
@@ -80,10 +79,10 @@ class TwoTowerModel {
     }
     
     /**
-     * Computes the score (dot product) between a user embedding and all item embeddings.
-     * @param {tf.Tensor1D} userEmbedding - A tensor of shape [D].
-     * @returns {Promise<Float32Array>} An array of scores, length N_items.
-     */
+      * Computes the score (dot product) between a user embedding and all item embeddings.
+      * @param {tf.Tensor1D} userEmbedding - A tensor of shape [D].
+      * @returns {Promise<Float32Array>} An array of scores, length N_items.
+      */
     async scoreAllItems(userEmbedding) {
         return await tf.tidy(() => {
             // userEmbedding: [D] -> uEmb: [D, 1] (Transposing for matrix multiplication)
@@ -99,8 +98,8 @@ class TwoTowerModel {
     }
     
     /**
-     * Computes a 2D PCA approximation for a sample of item embeddings.
-     */
+      * Computes a 2D PCA approximation for a sample of item embeddings.
+      */
     async computePCAProjection(numSamples = 1000) {
         return await tf.tidy(async () => {
             let itemEmbs = this.itemEmbeddings;
