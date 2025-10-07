@@ -56,12 +56,12 @@ class MovieLensApp {
         try {
             // 1. Fetch data
             const [interactionsResponse, itemsResponse] = await Promise.all([
-                fetch('data/u.data'),
-                fetch('data/u.item')
+                fetch('u.data'),
+                fetch('u.item')
             ]);
 
             if (!interactionsResponse.ok || !itemsResponse.ok) {
-                throw new Error('Could not find data/u.data or data/u.item. Ensure files are in a "data" folder and you are running a local server.');
+                throw new Error('Could not find u.data or u.item. Ensure files are in a "data" folder and you are running a local server.');
             }
 
             const rawInteractions = await interactionsResponse.text();
