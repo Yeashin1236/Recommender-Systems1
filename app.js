@@ -1,313 +1,351 @@
 // app.js
+// Main application logic: improved structure, better progress updates, safer disposals.
 
 const EMBEDDING_DIM = 25;
-const BATCH_SIZE = 1000;
+const BATCH_SIZE = 1024;
 const EPOCHS = 10;
 const LEARNING_RATE = 0.01;
-const LOG_UPDATE_INTERVAL = 10; // Log loss every N steps
+const LOG_UPDATE_INTERVAL = 5; // update UI every N batches
 const VISUALIZATION_SAMPLES = 1000;
 
 class App {
-    constructor() {
-        this.model = null;
-        this.interactions = [];
-        this.items = [];
-        this.numUsers = 0;
-        this.numItems = 0;
-        this.isTraining = false;
-        this.logElement = document.getElementById('training-log');
-        this.statusElement = document.getElementById('status');
-        this.trainButton = document.getElementById('train-button');
-        this.userSelect = document.getElementById('user-select');
-        this.visualizationContainer = document.getElementById('visualization-container');
+  constructor() {
+    this.model = null;
+    this.interactions = [];
+    this.items = [];
+    this.numUsers = 0;
+    this.numItems = 0;
+    this.isTraining = false;
 
-        this.init();
+    // UI elements
+    this.statusEl = document.getElementById('status');
+    this.trainButton = document.getElementById('train-button');
+    this.userSelect = document.getElementById('user-select');
+    this.logEl = document.getElementById('training-log');
+    this.epochCounter = document.getElementById('epoch-counter');
+    this.lossDisplay = document.getElementById('loss-display');
+    this.recoList = document.getElementById('recommendation-list');
+    this.currentUserIdEl = document.getElementById('current-user-id');
+    this.vizStatus = document.getElementById('viz-status');
+    this.progressBar = document.getElementById('progress-bar');
+    this.batchProgress = document.getElementById('batch-progress');
+    this.trainStateBadge = document.getElementById('train-state');
+
+    this.visualizationContainer = document.getElementById('visualization-container');
+
+    this.init();
+  }
+
+  async init() {
+    try {
+      this.updateStatus('Loading data...', 'orange');
+      await this.loadData();
+      this.model = new TwoTowerModel(this.numUsers, this.numItems, EMBEDDING_DIM, LEARNING_RATE);
+      this.setupUI();
+      this.updateStatus('Ready', 'green');
+      this.log('Ready. Click Train to start.');
+    } catch (e) {
+      console.error(e);
+      this.updateStatus('Error loading data — see console', 'red');
+      this.log(`Error: ${e.message}`);
+    }
+  }
+
+  updateStatus(text, color = 'black') {
+    this.statusEl.textContent = text;
+    this.statusEl.style.color = color;
+  }
+
+  log(msg) {
+    const now = new Date().toLocaleTimeString();
+    const p = document.createElement('div');
+    p.textContent = `[${now}] ${msg}`;
+    this.logEl.prepend(p);
+  }
+
+  async loadData() {
+    const INTERACTIONS_PATH = 'u.data';
+    const ITEMS_PATH = 'u.item';
+
+    // fetch both
+    const [r1, r2] = await Promise.all([fetch(INTERACTIONS_PATH), fetch(ITEMS_PATH)]);
+    if (!r1.ok || !r2.ok) {
+      throw new Error('Could not fetch u.data or u.item. Ensure files are in the same folder as index.html.');
     }
 
-    async init() {
-        this.updateStatus('Loading data...', 'blue');
-        try {
-            await this.loadData();
-            this.model = new TwoTowerModel(this.numUsers, this.numItems, EMBEDDING_DIM, LEARNING_RATE);
-            this.setupUI();
-            this.updateStatus('Ready to Train', 'green');
-        } catch (error) {
-            console.error(error);
-            // Updated error message reflects the flat file structure
-            this.updateStatus(`Error: Could not load data. Ensure u.data and u.item are in the **root** directory.`, 'red');
-            this.log(`Error: ${error.message}`);
+    const text1 = await r1.text();
+    const text2 = await r2.text();
+
+    // Parse u.data: user\titem\trating\ttimestamp
+    this.interactions = text1.split('\n').filter(Boolean).map(line => {
+      const p = line.trim().split('\t');
+      return {
+        userId: parseInt(p[0], 10) - 1,
+        itemId: parseInt(p[1], 10) - 1,
+        rating: parseInt(p[2], 10)
+      };
+    });
+
+    // Parse u.item: id|title|...|genres...
+    this.items = text2.split('\n').filter(Boolean).map(line => {
+      const p = line.split('|');
+      return {
+        id: parseInt(p[0], 10) - 1,
+        title: p[1] || `Item ${p[0]}`,
+        // store raw genre vector if present
+        genres: (p.length > 5) ? p.slice(5).map(x => parseInt(x, 10)) : []
+      };
+    });
+
+    // compute sizes
+    const maxUser = Math.max(...this.interactions.map(i => i.userId));
+    const maxItem = Math.max(...this.interactions.map(i => i.itemId));
+    this.numUsers = maxUser + 1;
+    this.numItems = maxItem + 1;
+
+    this.log(`Loaded ${this.interactions.length} interactions and ${this.numItems} items.`);
+    this.log(`Num users: ${this.numUsers}, num items: ${this.numItems}`);
+  }
+
+  setupUI() {
+    this.trainButton.disabled = false;
+    this.userSelect.disabled = false;
+
+    // populate user select with a sample of users
+    const allUserIds = Array.from({ length: this.numUsers }, (_, i) => i);
+    const sample = this.shuffleArray(allUserIds).slice(0, 80);
+
+    sample.forEach(uid => {
+      const opt = document.createElement('option');
+      opt.value = uid;
+      opt.textContent = `User ${uid + 1}`;
+      this.userSelect.appendChild(opt);
+    });
+
+    this.userSelect.value = sample[0];
+    this.currentUserIdEl.textContent = parseInt(sample[0], 10) + 1;
+    this.userSelect.addEventListener('change', async (e) => {
+      const uid = e.target.value;
+      this.currentUserIdEl.textContent = parseInt(uid, 10) + 1;
+      if (!this.isTraining) await this.updateRecommendations(uid);
+    });
+
+    this.trainButton.addEventListener('click', async () => {
+      if (!this.isTraining) await this.startTraining();
+    });
+  }
+
+  shuffleArray(arr) {
+    // Fisher-Yates
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+
+  async startTraining() {
+    if (this.isTraining) return;
+    if (!this.model) return this.log('Model not initialized');
+
+    this.isTraining = true;
+    this.trainButton.disabled = true;
+    this.trainStateBadge.textContent = 'Training';
+    this.trainStateBadge.style.background = '#fff4e6';
+    this.trainStateBadge.style.color = '#8a5a00';
+
+    // Shuffle interactions copy
+    const interactions = this.shuffleArray(this.interactions.slice());
+
+    try {
+      const totalSteps = Math.ceil(interactions.length / BATCH_SIZE) * EPOCHS;
+      let globalStep = 0;
+
+      for (let epoch = 1; epoch <= EPOCHS; epoch++) {
+        this.epochCounter.textContent = epoch;
+        let epochLoss = 0;
+        let stepCount = 0;
+
+        // process batches
+        for (let i = 0; i < interactions.length; i += BATCH_SIZE) {
+          const batch = interactions.slice(i, i + BATCH_SIZE);
+          const userIndices = batch.map(b => b.userId);
+          const itemIndices = batch.map(b => b.itemId);
+
+          // single train step
+          const lossVal = await this.model.trainStep(userIndices, itemIndices);
+
+          epochLoss += lossVal;
+          stepCount++;
+          globalStep++;
+
+          // update UI periodically
+          if (stepCount % LOG_UPDATE_INTERVAL === 0 || i + BATCH_SIZE >= interactions.length) {
+            const avgLoss = epochLoss / stepCount;
+            this.lossDisplay.textContent = avgLoss.toFixed(4);
+            this.log(`Epoch ${epoch} - Step ${stepCount} - AvgLoss: ${avgLoss.toFixed(4)}`);
+          }
+
+          // update batch progress
+          const batchPercent = Math.min(100, Math.round(((i + BATCH_SIZE) / interactions.length) * 100));
+          this.progressBar.style.width = `${Math.round(((epoch - 1) / EPOCHS) * 100 + (batchPercent / EPOCHS))}%`;
+          this.batchProgress.textContent = `${Math.min(100, batchPercent)}%`;
+
+          // small yield to UI
+          await new Promise(resolve => setTimeout(resolve, 0));
         }
+
+        const finalEpochLoss = epochLoss / stepCount;
+        this.log(`Epoch ${epoch}/${EPOCHS} completed. Avg Loss: ${finalEpochLoss.toFixed(4)}`);
+        this.lossDisplay.textContent = finalEpochLoss.toFixed(4);
+
+        // Update recommendations and visualization after each epoch
+        await this.updateRecommendations(this.userSelect.value);
+        await this.updateVisualization();
+      }
+
+      this.log('Training finished.');
+      this.updateStatus('Training complete', 'green');
+      this.progressBar.style.width = '100%';
+      this.batchProgress.textContent = '100%';
+    } catch (err) {
+      console.error(err);
+      this.log(`Training error: ${err.message}`);
+      this.updateStatus('Error during training', 'red');
+    } finally {
+      this.isTraining = false;
+      this.trainButton.disabled = false;
+      this.trainStateBadge.textContent = 'Idle';
+      this.trainStateBadge.style.background = '#eef7ff';
+      this.trainStateBadge.style.color = '#1366d6';
     }
+  }
 
-    async loadData() {
-        // --- CHANGE HERE: REMOVED 'data/' SUBDIRECTORY ---
-        const INTERACTIONS_PATH = 'u.data'; 
-        const ITEMS_PATH = 'u.item';
-        // --------------------------------------------------
+  async updateRecommendations(userId) {
+    if (!this.model) return;
 
-        this.log(`Fetching interactions from ${INTERACTIONS_PATH}...`);
-        
-        const [interactionsResponse, itemsResponse] = await Promise.all([
-            fetch(INTERACTIONS_PATH),
-            fetch(ITEMS_PATH)
-        ]);
+    const uid = parseInt(userId, 10);
+    this.currentUserIdEl.textContent = uid + 1;
 
-        if (!interactionsResponse.ok || !itemsResponse.ok) {
-            throw new Error('Could not find u.data or u.item. Ensure files are in the same directory as index.html.');
-        }
+    // get user embedding tensor, then score all items
+    const userEmbTensor = tf.tidy(() => {
+      return this.model.userForward(tf.tensor1d([uid], 'int32')).squeeze(); // [D]
+    });
 
-        // Parse u.data (User, Item, Rating, Timestamp - TAB separated)
-        const interactionsText = await interactionsResponse.text();
-        this.interactions = interactionsText.split('\n')
-            .filter(line => line.trim().length > 0)
-            .map(line => {
-                const parts = line.split('\t');
-                // The dataset is 1-indexed, so we subtract 1 to make it 0-indexed
-                return {
-                    userId: parseInt(parts[0]) - 1, 
-                    itemId: parseInt(parts[1]) - 1,
-                    rating: parseInt(parts[2]),
-                };
-            });
+    const scores = await this.model.scoreAllItems(userEmbTensor);
+    userEmbTensor.dispose();
 
-        // Parse u.item (Item ID, Title, ... , Genres - PIPE separated)
-        const itemsText = await itemsResponse.text();
-        this.items = itemsText.split('\n')
-            .filter(line => line.trim().length > 0)
-            .map(line => {
-                const parts = line.split('|');
-                // The dataset is 1-indexed, so we subtract 1 to make it 0-indexed
-                return {
-                    id: parseInt(parts[0]) - 1, 
-                    title: parts[1],
-                    genres: parts.slice(5).map(g => parseInt(g)),
-                };
-            });
-        
-        // Find maximum IDs to set the embedding table size (standard MovieLens 100k)
-        const maxUserId = Math.max(...this.interactions.map(i => i.userId));
-        const maxItemId = Math.max(...this.interactions.map(i => i.itemId));
+    // gather items user already rated (exclude all rated items)
+    const ratedSet = new Set(this.interactions.filter(it => it.userId === uid).map(it => it.itemId));
 
-        this.numUsers = maxUserId + 1; // 943 users
-        this.numItems = maxItemId + 1; // 1682 items
+    // build ranked list
+    const ranked = Array.from(scores).map((s, idx) => ({
+      itemId: idx,
+      score: s,
+      title: (this.items[idx] && this.items[idx].title) || `Item ${idx + 1}`
+    })).filter(x => !ratedSet.has(x.itemId)).sort((a, b) => b.score - a.score).slice(0, 15);
 
-        this.log(`Loaded ${this.interactions.length} interactions and ${this.numItems} items.`);
-        this.log(`Num Users: ${this.numUsers}, Num Items: ${this.numItems}, Embedding Dim: ${EMBEDDING_DIM}`);
+    // render
+    this.recoList.innerHTML = '';
+    if (ranked.length === 0) {
+      this.recoList.innerHTML = '<li>No recommendations available — maybe your dataset is small.</li>';
+    } else {
+      ranked.forEach((r, i) => {
+        const li = document.createElement('li');
+        li.textContent = `${i + 1}. ${r.title} — score: ${r.score.toFixed(3)}`;
+        this.recoList.appendChild(li);
+      });
     }
+  }
 
-    setupUI() {
-        this.trainButton.disabled = false;
-        this.userSelect.disabled = false;
-        
-        // Populate user dropdown (select 50 random users for demonstration)
-        const allUserIds = Array.from({ length: this.numUsers }, (_, i) => i);
-        const sampleUserIds = allUserIds.sort(() => 0.5 - Math.random()).slice(0, 50);
+  async updateVisualization() {
+    if (!this.model) return;
+    this.updateStatus('Computing PCA...', 'orange');
+    this.vizStatus.textContent = 'Computing 2D PCA projection...';
 
-        sampleUserIds.forEach(id => {
-            const option = document.createElement('option');
-            option.value = id;
-            option.textContent = `User ${id + 1}`;
-            this.userSelect.appendChild(option);
-        });
+    try {
+      const { projection, sampleIndices } = await this.model.computePCAProjection(VISUALIZATION_SAMPLES);
 
-        // Set initial user info
-        this.userSelect.value = sampleUserIds[0];
-        document.getElementById('current-user-id').textContent = sampleUserIds[0] + 1;
-        document.getElementById('viz-status').textContent = 'Ready to visualize after training.';
+      // format data
+      const data = projection.map((coords, i) => ({
+        x: coords[0],
+        y: coords[1],
+        id: sampleIndices[i],
+        title: (this.items[sampleIndices[i]] && this.items[sampleIndices[i]].title) || `Item ${sampleIndices[i] + 1}`
+      }));
+
+      this.renderVisualization(data);
+
+      this.vizStatus.textContent = `Showing PCA projection for ${data.length} items.`;
+      this.updateStatus(this.isTraining ? 'Training...' : 'Ready', this.isTraining ? 'orange' : 'green');
+    } catch (err) {
+      console.error(err);
+      this.vizStatus.textContent = 'Error generating visualization.';
+      this.updateStatus('Visualization error', 'red');
+      this.log(`PCA error: ${err.message}`);
     }
+  }
 
-    updateStatus(message, color = 'black') {
-        this.statusElement.textContent = message;
-        this.statusElement.style.color = color;
-    }
+  renderVisualization(data) {
+    // clear
+    this.visualizationContainer.innerHTML = '';
 
-    log(message) {
-        const p = document.createElement('p');
-        p.textContent = message;
-        this.logElement.prepend(p);
-    }
+    const margin = { top: 20, right: 20, bottom: 30, left: 40 };
+    const width = this.visualizationContainer.clientWidth - margin.left - margin.right;
+    const height = this.visualizationContainer.clientHeight - margin.top - margin.bottom;
 
-    async startTraining() {
-        if (this.isTraining) return;
+    const svg = d3.select('#visualization-container').append('svg')
+      .attr('width', width + margin.left + margin.right)
+      .attr('height', height + margin.top + margin.bottom)
+      .attr('viewBox', `0 0 ${width + margin.left + margin.right} ${height + margin.top + margin.bottom}`)
+      .append('g').attr('transform', `translate(${margin.left},${margin.top})`);
 
-        this.isTraining = true;
-        this.trainButton.disabled = true;
-        this.updateStatus('Training...', 'orange');
-        
-        // Shuffle interactions before training
-        const shuffledInteractions = this.interactions.sort(() => 0.5 - Math.random());
+    const xExtent = d3.extent(data, d => d.x);
+    const yExtent = d3.extent(data, d => d.y);
 
-        for (let epoch = 1; epoch <= EPOCHS; epoch++) {
-            document.getElementById('epoch-counter').textContent = epoch;
-            let epochLoss = 0;
-            let stepCount = 0;
+    const xScale = d3.scaleLinear().domain(xExtent).nice().range([0, width]);
+    const yScale = d3.scaleLinear().domain(yExtent).nice().range([height, 0]);
 
-            for (let i = 0; i < shuffledInteractions.length; i += BATCH_SIZE) {
-                const batch = shuffledInteractions.slice(i, i + BATCH_SIZE);
-                const userIndices = batch.map(b => b.userId);
-                const itemIndices = batch.map(b => b.itemId);
+    svg.append('g').attr('transform', `translate(0,${height})`).call(d3.axisBottom(xScale).ticks(6));
+    svg.append('g').call(d3.axisLeft(yScale).ticks(6));
 
-                const lossTensor = await this.model.trainStep(userIndices, itemIndices);
-                const loss = await lossTensor.data();
-                const scalarLoss = loss[0];
-                lossTensor.dispose();
+    // tooltip
+    const tooltip = d3.select('body').append('div')
+      .attr('class', 'tooltip-d3')
+      .style('position', 'absolute')
+      .style('background', '#0b1220')
+      .style('color', '#cfe9ff')
+      .style('padding', '6px 8px')
+      .style('border-radius', '6px')
+      .style('pointer-events', 'none')
+      .style('opacity', 0);
 
-                epochLoss += scalarLoss;
-                stepCount++;
-
-                if (stepCount % LOG_UPDATE_INTERVAL === 0) {
-                    const avgLoss = epochLoss / stepCount;
-                    document.getElementById('loss-display').textContent = avgLoss.toFixed(4);
-                }
-            }
-
-            const finalEpochLoss = epochLoss / stepCount;
-            this.log(`Epoch ${epoch}/${EPOCHS} completed. Avg Loss: ${finalEpochLoss.toFixed(4)}`);
-            document.getElementById('loss-display').textContent = finalEpochLoss.toFixed(4);
-
-            // Update recommendations and visualization after each epoch
-            await this.updateRecommendations(this.userSelect.value);
-            await this.updateVisualization();
-        }
-
-        this.isTraining = false;
-        this.trainButton.disabled = false;
-        this.updateStatus('Training Complete', 'green');
-    }
-
-    async updateRecommendations(userId) {
-        const targetUserId = parseInt(userId);
-        
-        // 1. Get the user's current embedding
-        const userEmbTensor = tf.tidy(() => {
-            return this.model.userForward(tf.tensor1d([targetUserId], 'int32')).squeeze(); // [D]
-        });
-
-        // 2. Score all items
-        const scores = await this.model.scoreAllItems(userEmbTensor);
-        userEmbTensor.dispose();
-        
-        // 3. Get items already rated by the user (to filter them out)
-        const userRatedItems = new Set(
-            this.interactions
-                .filter(i => i.userId === targetUserId && i.rating >= 4) // Only filter out highly-rated items
-                .map(i => i.itemId)
-        );
-
-        // 4. Rank items
-        const rankedItems = scores
-            .map((score, index) => ({ 
-                itemId: index, 
-                score: score, 
-                title: this.items[index].title 
-            }))
-            .filter(item => !userRatedItems.has(item.itemId)) // Filter out already rated items
-            .sort((a, b) => b.score - a.score) // Sort by score descending
-            .slice(0, 10); // Take top 10
-
-        // 5. Update UI
-        const listElement = document.getElementById('recommendation-list');
-        listElement.innerHTML = '';
-        rankedItems.forEach((item, index) => {
-            const li = document.createElement('li');
-            li.textContent = `${index + 1}. ${item.title} (Score: ${item.score.toFixed(3)})`;
-            listElement.appendChild(li);
-        });
-    }
-
-    async updateUserInfo(userId) {
-        document.getElementById('current-user-id').textContent = parseInt(userId) + 1;
-        if (!this.isTraining) {
-            await this.updateRecommendations(userId);
-        }
-    }
-
-    async updateVisualization() {
-        this.updateStatus('Generating visualization...', 'orange');
-        document.getElementById('viz-status').textContent = 'Computing 2D PCA projection...';
-        
-        const { projection, sampleIndices } = await this.model.computePCAProjection(VISUALIZATION_SAMPLES);
-        
-        // Format data for D3
-        const data = projection.map((coords, i) => ({
-            x: coords[0],
-            y: coords[1],
-            id: sampleIndices[i],
-            title: this.items[sampleIndices[i]].title
-        }));
-
-        this.renderVisualization(data);
-        document.getElementById('viz-status').textContent = `Showing PCA projection for ${data.length} item embeddings.`;
-        this.updateStatus(this.isTraining ? 'Training...' : 'Training Complete', this.isTraining ? 'orange' : 'green');
-    }
-
-    renderVisualization(data) {
-        const margin = { top: 20, right: 20, bottom: 30, left: 40 };
-        const width = this.visualizationContainer.clientWidth - margin.left - margin.right;
-        const height = this.visualizationContainer.clientHeight - margin.top - margin.bottom;
-
-        this.visualizationContainer.innerHTML = ''; // Clear previous chart
-
-        const svg = d3.select("#visualization-container").append("svg")
-            .attr("width", width + margin.left + margin.right)
-            .attr("height", height + margin.top + margin.bottom)
-            .append("g")
-            .attr("transform", `translate(${margin.left},${margin.top})`);
-
-        // Scales
-        const xScale = d3.scaleLinear()
-            .domain(d3.extent(data, d => d.x)).nice()
-            .range([0, width]);
-
-        const yScale = d3.scaleLinear()
-            .domain(d3.extent(data, d => d.y)).nice()
-            .range([height, 0]);
-
-        // Axes
-        svg.append("g")
-            .attr("transform", `translate(0,${height})`)
-            .call(d3.axisBottom(xScale));
-
-        svg.append("g")
-            .call(d3.axisLeft(yScale));
-
-        // Tooltip setup
-        const tooltip = d3.select("body").append("div")
-            .attr("class", "tooltip")
-            .style("position", "absolute")
-            .style("background", "#333")
-            .style("color", "white")
-            .style("padding", "5px")
-            .style("border-radius", "3px")
-            .style("pointer-events", "none")
-            .style("opacity", 0);
-
-        // Dots
-        svg.selectAll(".dot")
-            .data(data)
-            .enter().append("circle")
-            .attr("class", "dot")
-            .attr("r", 3.5)
-            .attr("cx", d => xScale(d.x))
-            .attr("cy", d => yScale(d.y))
-            .style("fill", "#3498DB")
-            .on("mouseover", (event, d) => {
-                tooltip.transition()
-                    .duration(200)
-                    .style("opacity", .9);
-                tooltip.html(d.title)
-                    .style("left", (event.pageX + 10) + "px")
-                    .style("top", (event.pageY - 28) + "px");
-            })
-            .on("mouseout", () => {
-                tooltip.transition()
-                    .duration(500)
-                    .style("opacity", 0);
-            });
-    }
+    svg.selectAll('.dot')
+      .data(data)
+      .enter().append('circle')
+      .attr('class', 'dot')
+      .attr('cx', d => xScale(d.x))
+      .attr('cy', d => yScale(d.y))
+      .attr('r', 3.2)
+      .attr('fill', '#2c7be5')
+      .attr('opacity', 0.92)
+      .on('mouseover', (event, d) => {
+        tooltip.transition().duration(120).style('opacity', 1);
+        tooltip.html(`<strong>${d.title}</strong><br/>id: ${d.id}`)
+          .style('left', (event.pageX + 10) + 'px')
+          .style('top', (event.pageY - 28) + 'px');
+      })
+      .on('mousemove', (event) => {
+        tooltip.style('left', (event.pageX + 10) + 'px').style('top', (event.pageY - 28) + 'px');
+      })
+      .on('mouseout', () => {
+        tooltip.transition().duration(200).style('opacity', 0);
+      });
+  }
 }
 
-// Initialize the app when the window loads
+// start
 window.onload = () => {
-    window.app = new App();
+  window.app = new App();
 };
