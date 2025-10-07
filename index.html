@@ -1,75 +1,90 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <meta charset="UTF-8">
-    <title>Two-Tower Movie Recommender (TensorFlow.js)</title>
+    <title>Two-Tower Recommender (TensorFlow.js)</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.6.0/dist/tf.min.js"></script>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f9; color: #333; }
-        .container { max-width: 1200px; margin: 0 auto; background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1); }
-        h1 { color: #007bff; border-bottom: 2px solid #eee; padding-bottom: 10px; }
-        h3 { color: #555; }
-        .controls { margin: 20px 0; display: flex; gap: 10px; }
-        button { 
-            padding: 10px 15px; 
-            font-size: 16px; 
-            cursor: pointer; 
-            border: none; 
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { max-width: 1000px; margin: auto; }
+        h1 { color: #2C3E50; }
+        .controls, .training, .recommendations, .visualization {
+            border: 1px solid #BDC3C7;
+            padding: 15px;
+            margin-bottom: 20px;
             border-radius: 5px;
-            background-color: #007bff;
-            color: white;
-            transition: background-color 0.3s;
         }
-        button:hover:not(:disabled) { background-color: #0056b3; }
-        button:disabled { background-color: #ccc; cursor: not-allowed; }
-        .status { margin: 10px 0; padding: 10px; border-radius: 5px; background-color: #ffc107; color: #333; }
-        .chart-container { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; background-color: #fff; }
-        .results { margin-top: 20px; padding: 15px; border: 1px solid #007bff; border-radius: 5px; background-color: #e9f7ff; }
-        .results h3 { color: #007bff; margin-top: 0; }
-        .user-info { display: flex; gap: 40px; }
-        .user-info div { flex: 1; }
-        .user-info ul { list-style: none; padding: 0; }
-        .user-info li { padding: 5px 0; border-bottom: 1px dotted #ccc; }
-        .user-info li:last-child { border-bottom: none; }
-        .tips { margin-top: 30px; padding: 15px; border: 1px dashed #ccc; border-radius: 5px; background-color: #f9f9f9; }
-        .tips h2 { color: #555; margin-top: 0; }
+        .training-log {
+            max-height: 200px;
+            overflow-y: scroll;
+            background-color: #ECF0F1;
+            padding: 10px;
+            margin-top: 10px;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        button {
+            padding: 10px 15px;
+            background-color: #3498DB;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        button:disabled {
+            background-color: #AAB7B8;
+        }
+        #visualization-container {
+            width: 100%;
+            height: 500px;
+        }
+        .recommendation-list {
+            list-style: none;
+            padding: 0;
+        }
+        .recommendation-list li {
+            padding: 5px 0;
+            border-bottom: 1px dotted #BDC3C7;
+        }
     </style>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.13.0/dist/tf.min.js"></script>
 </head>
 <body>
     <div class="container">
-        <h1>Two-Tower Movie Recommender (TensorFlow.js)</h1>
-        
-        <div class="controls">
-            <button id="loadData">Load Data (u.data, u.item)</button>
-            <button id="train" disabled>Train Model (10 Epochs)</button>
-            <button id="test" disabled>Test Recommendations</button>
-        </div>
-        
-        <div id="status" class="status">Loading TensorFlow.js...</div>
-        
-        <div class="chart-container">
-            <h3>Training Loss (In-Batch Sampled Softmax)</h3>
-            <canvas id="lossChart" width="800" height="300"></canvas>
-        </div>
-        
-        <div class="chart-container">
-            <h3>Item Embeddings 2D Projection (PCA Approximation)</h3>
-            <canvas id="embeddingChart" width="800" height="600"></canvas>
-        </div>
-        
-        <div id="results-container" class="results">
-            </div>
+        <h1>Two-Tower Recommender (MovieLens 100k)</h1>
 
-        <div class="tips">
-            <h2>Usability Tips</h2>
-            <p><strong>Hosting:</strong> This project is client-side and requires the data files (<code>u.data</code>, <code>u.item</code>) to be accessible via the relative path <code>data/</code>. For GitHub Pages, ensure a <code>data</code> folder exists.</p>
-            <p><strong>Expected Training Time:</strong> Training is CPU/GPU intensive. With 10 epochs and WebGL acceleration, it may take 30 seconds to a few minutes depending on your hardware.</p>
-            <p><strong>PCA Visualization:</strong> The scatter plot displays a 2D projection of 1000 sampled item embeddings. Hover over points to see the movie title.</p>
+        <div class="controls">
+            <h2>Setup & Data</h2>
+            <p><strong>Status:</strong> <span id="status">Loading data...</span></p>
+            <p>
+                <button id="train-button" onclick="app.startTraining()" disabled>Start Training (10 Epochs)</button>
+            </p>
+            <p>
+                <label for="user-select">Select User for Recommendations:</label>
+                <select id="user-select" onchange="app.updateUserInfo(this.value)" disabled></select>
+            </p>
+        </div>
+
+        <div class="training">
+            <h2>Training Progress</h2>
+            <p>Epoch: <span id="epoch-counter">0</span> | Loss: <span id="loss-display">N/A</span></p>
+            <div class="training-log" id="training-log"></div>
+        </div>
+
+        <div class="recommendations">
+            <h2>Recommendations for User <span id="current-user-id">N/A</span></h2>
+            <ul id="recommendation-list" class="recommendation-list">
+                <li>*Train the model to see recommendations*</li>
+            </ul>
+        </div>
+
+        <div class="visualization">
+            <h2>Item Embedding Visualization (2D PCA)</h2>
+            <p id="viz-status">Visualization requires training the model first.</p>
+            <div id="visualization-container"></div>
         </div>
     </div>
-    
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@2.9.4/dist/Chart.min.js"></script>
+
     <script src="two-tower.js"></script>
     <script src="app.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
 </body>
 </html>
