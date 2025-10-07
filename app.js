@@ -51,10 +51,10 @@ class MovieLensApp {
         this.updateStatus('Loading and parsing data... **Check console for errors if this step fails.**');
         
         try {
-            // FIX 1: Ensure correct relative paths. The files MUST be in a 'data/' subdirectory.
+            // FIX: Updated to fetch directly from the root directory
             const [interactionsResponse, itemsResponse] = await Promise.all([
-                fetch('data/u.data'), // Corrected path
-                fetch('data/u.item')  // Corrected path
+                fetch('u.data'), // Updated path
+                fetch('u.item')  // Updated path
             ]);
 
             if (!interactionsResponse.ok || !itemsResponse.ok) {
@@ -124,8 +124,6 @@ class MovieLensApp {
         }
     }
 
-    // FIX 2: Missing Core Methods Implementation
-    
     async train() {
         if (this.isTraining) return;
         this.isTraining = true;
@@ -183,11 +181,6 @@ class MovieLensApp {
         const maxLoss = Math.max(...history);
         const labels = history.map((_, i) => i);
 
-        // Use a simple Chart.js equivalent (or library if available, but for simplicity, we mock/use basic canvas/external logic)
-        // Since we don't have Chart.js, a simple message will be displayed, or we assume a simple placeholder logic for plotting is present.
-        // For this fix, we assume an actual plotting library would handle this, but the logic is to update the chart data.
-        // For a minimal fix, we'll ensure the status is updated.
-        // A full Chart.js implementation is too complex to reconstruct here, so we focus on the data structure.
         this.lossChartCtx.clearRect(0, 0, 800, 300);
         this.lossChartCtx.fillStyle = '#ccc';
         this.lossChartCtx.fillRect(0, 0, 800, 300);
@@ -203,8 +196,6 @@ class MovieLensApp {
 
         if (!this.embeddingChartCtx) return;
         
-        // This is where a scatter plot would be rendered using a library like Chart.js or D3.
-        // For now, we clear the canvas and show a confirmation message.
         this.embeddingChartCtx.clearRect(0, 0, 800, 600);
         this.embeddingChartCtx.fillStyle = '#ccc';
         this.embeddingChartCtx.fillRect(0, 0, 800, 600);
