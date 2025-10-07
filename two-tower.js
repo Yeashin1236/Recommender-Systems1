@@ -1,8 +1,5 @@
 // two-tower.js
 
-/**
- * Implements the Two-Tower Retrieval Model for Collaborative Filtering.
- */
 class TwoTowerModel {
     constructor(numUsers, numItems, embeddingDim, learningRate = 0.001) {
         this.numUsers = numUsers;
@@ -35,6 +32,7 @@ class TwoTowerModel {
     
     // Implements the In-Batch Sampled Softmax Loss
     async trainStep(userIndices, itemIndices) {
+        // Use optimizer.minimize for safe gradient computation and tensor cleanup
         const lossTensor = this.optimizer.minimize(() => {
             return tf.tidy(() => {
                 // 1. Get embeddings for the batch
@@ -42,10 +40,10 @@ class TwoTowerModel {
                 const itemEmbs = this.itemForward(tf.tensor1d(itemIndices, 'int32')); // [B, D]
                 
                 // 2. Compute Logits Matrix: L = U * I_T+
-                // Result: [B, B] matrix. Diagonal L[i, i] is positive score.
+                // [B, D] * [D, B] -> [B, B]. Diagonal is positive score, off-diagonal are negatives.
                 const logits = tf.matMul(userEmbs, itemEmbs, false, true);
                 
-                // 3. Create Labels: Diagonal is 1 (positives)
+                // 3. Create Labels: Identity matrix (one-hot encoding of the diagonal)
                 const batchSize = userIndices.length;
                 const labels = tf.oneHot(
                     tf.range(0, batchSize, 1, 'int32'), 
@@ -70,20 +68,18 @@ class TwoTowerModel {
     }
     
     /**
-     * Computes the score for a user embedding against all item embeddings.
+     * Computes the score for a user embedding against all item embeddings efficiently.
      */
     async getScoresForAllItems(userEmbedding) {
         return await tf.tidy(() => {
-            const uEmb = userEmbedding.expandDims(1); // [D, 1]
+            // userEmbedding: [D] -> uEmb: [D, 1]
+            const uEmb = userEmbedding.expandDims(1); 
+            
             // Scores = [N_items, D] * [D, 1] -> [N_items, 1]
             const scoresTensor = tf.matMul(this.itemEmbeddings, uEmb); 
             
-            return scoresTensor.squeeze().dataSync(); // [N_items] array
+            return scoresTensor.squeeze().dataSync(); // Return as a standard JS array
         });
-    }
-    
-    getItemEmbeddings() {
-        return this.itemEmbeddings;
     }
     
     /**
@@ -95,6 +91,7 @@ class TwoTowerModel {
             let sampleIndices = tf.randomUniform([numSamples], 0, this.numItems, 'int32');
             let sampleEmbs = tf.gather(itemEmbs, sampleIndices);
 
+            // Center the data (crucial for correct PCA)
             const mean = sampleEmbs.mean(0);
             const centered = sampleEmbs.sub(mean);
 
