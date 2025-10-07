@@ -1,50 +1,73 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Two-Tower Movie Recommender</title>
+    <meta charset="UTF-8">
+    <title>Two-Tower Movie Recommender (TensorFlow.js)</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        .container { max-width: 1200px; margin: 0 auto; }
-        .controls { margin: 20px 0; }
-        button { padding: 10px 15px; margin: 5px; font-size: 16px; }
-        .status { margin: 10px 0; padding: 10px; background: #f0f0f0; border-radius: 5px; }
-        .chart-container { margin: 20px 0; }
-        canvas { border: 1px solid #ccc; }
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f9; color: #333; }
+        .container { max-width: 1200px; margin: 0 auto; background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1); }
+        h1 { color: #007bff; border-bottom: 2px solid #eee; padding-bottom: 10px; }
+        h3 { color: #555; }
+        .controls { margin: 20px 0; display: flex; gap: 10px; }
+        button { 
+            padding: 10px 15px; 
+            font-size: 16px; 
+            cursor: pointer; 
+            border: none; 
+            border-radius: 5px;
+            background-color: #007bff;
+            color: white;
+            transition: background-color 0.3s;
+        }
+        button:hover:not(:disabled) { background-color: #0056b3; }
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+        .status { margin: 10px 0; padding: 10px; background: #e9ecef; border-radius: 5px; font-weight: bold; }
+        .chart-container { margin: 20px 0; padding: 10px; border: 1px solid #ddd; border-radius: 5px; }
+        canvas { display: block; background-color: #fff; }
         .results { margin: 20px 0; }
         table { border-collapse: collapse; width: 100%; margin: 10px 0; }
         th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-        th { background-color: #f2f2f2; }
-        .side-by-side { display: flex; gap: 20px; }
-        .side-by-side > div { flex: 1; }
+        th { background-color: #f2f2f2; color: #333; }
+        .side-by-side { display: flex; gap: 40px; }
+        .side-by-side > div { flex: 1; min-width: 0; }
+        .tips { margin-top: 30px; padding: 15px; background-color: #fffff0; border: 1px solid #ffe0b2; border-left: 5px solid #ff9800; border-radius: 5px; }
+        .tips p { margin: 5px 0; font-size: 0.9em; }
     </style>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.2.0/dist/tf.min.js"></script>
 </head>
 <body>
     <div class="container">
-        <h1>Two-Tower Movie Recommender</h1>
+        <h1>Two-Tower Movie Retrieval Recommender</h1>
         
         <div class="controls">
             <button id="loadData">Load Data</button>
-            <button id="train" disabled>Train</button>
-            <button id="test" disabled>Test</button>
+            <button id="train" disabled>Train Model (10 Epochs)</button>
+            <button id="test" disabled>Test Recommendations</button>
         </div>
         
-        <div id="status" class="status">Ready to load data...</div>
+        <div id="status" class="status">Loading TensorFlow.js...</div>
         
         <div class="chart-container">
-            <h3>Training Loss</h3>
+            <h3>Training Loss (In-Batch Sampled Softmax)</h3>
             <canvas id="lossChart" width="800" height="300"></canvas>
         </div>
         
         <div class="chart-container">
-            <h3>Item Embeddings (PCA)</h3>
+            <h3>Item Embeddings 2D Projection (PCA Approximation)</h3>
             <canvas id="embeddingChart" width="800" height="600"></canvas>
         </div>
         
-        <div id="results" class="results"></div>
-    </div>
+        <div id="results-container" class="results">
+            </div>
 
-    <!-- Load TensorFlow.js -->
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.15.0/dist/tf.min.js"></script>
+        <div class="tips">
+            <h2>Usability Tips</h2>
+            <p><strong>Hosting:</strong> This project is client-side and requires the data files (<code>u.data</code>, <code>u.item</code>) to be accessible via the relative path <code>data/</code>. For GitHub Pages, ensure a <code>data</code> folder exists.</p>
+            <p><strong>Expected Training Time:</strong> Training is CPU/GPU intensive. With 10 epochs and WebGL acceleration, it may take 30 seconds to a few minutes depending on your hardware.</p>
+            <p><strong>PCA Visualization:</strong> The scatter plot displays a 2D projection of 1000 sampled item embeddings. Hover over points to see the movie title.</p>
+        </div>
+    </div>
+    
     <script src="two-tower.js"></script>
     <script src="app.js"></script>
 </body>
