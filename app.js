@@ -1,25 +1,33 @@
+// app.js
+
 class MovieLensApp {
     constructor() {
-        this.interactions = [];
-        this.items = new Map();
-        this.userMap = new Map();
-        this.itemMap = new Map();
-        this.reverseUserMap = new Map();
-        this.reverseItemMap = new Map();
-        this.userTopRated = new Map();
+        // Data and Indexing
+        this.interactions = []; 
+        this.indexedInteractions = []; 
+        this.items = new Map(); 
+        this.userIds = []; 
+        this.itemIds = []; 
+        this.userIdxMap = new Map(); 
+        this.itemIdxMap = new Map(); 
+        this.userTopRated = new Map(); 
         this.model = null;
         
+        // Configuration
         this.config = {
-            maxInteractions: 80000,
+            maxInteractions: 80000, 
             embeddingDim: 32,
             batchSize: 512,
-            epochs: 20,
+            epochs: 10,
             learningRate: 0.001
         };
         
+        // UI/Training State
         this.lossHistory = [];
         this.isTraining = false;
-        
+        this.lossChartCtx = document.getElementById('lossChart').getContext('2d');
+        this.embeddingChartCtx = document.getElementById('embeddingChart').getContext('2d');
+
         this.initializeUI();
     }
     
@@ -28,380 +36,334 @@ class MovieLensApp {
         document.getElementById('train').addEventListener('click', () => this.train());
         document.getElementById('test').addEventListener('click', () => this.test());
         
-        this.updateStatus('Click "Load Data" to start');
+        this.updateStatus('TensorFlow.js loaded. Click "Load Data" to start.');
+    }
+
+    setControls(isLoading, isTrained) {
+        document.getElementById('loadData').disabled = isLoading;
+        document.getElementById('train').disabled = isLoading || !this.interactions.length;
+        document.getElementById('test').disabled = isLoading || !isTrained;
     }
     
     async loadData() {
-        this.updateStatus('Loading data...');
+        this.setControls(true, false);
+        this.updateStatus('Loading and parsing data...');
         
         try {
-            // Load interactions
-            const interactionsResponse = await fetch('data/u.data');
-            const interactionsText = await interactionsResponse.text();
-            const interactionsLines = interactionsText.trim().split('\n');
+            // Fetch data from relative paths (requires data/u.data and data/u.item)
+            const [interactionsResponse, itemsResponse] = await Promise.all([
+                fetch('data/u.data'),
+                fetch('data/u.item')
+            ]);
+            const [interactionsText, itemsText] = await Promise.all([
+                interactionsResponse.text(),
+                itemsResponse.text()
+            ]);
             
-            this.interactions = interactionsLines.slice(0, this.config.maxInteractions).map(line => {
-                const [userId, itemId, rating, timestamp] = line.split('\t');
-                return {
-                    userId: parseInt(userId),
-                    itemId: parseInt(itemId),
-                    rating: parseFloat(rating),
-                    timestamp: parseInt(timestamp)
-                };
-            });
-            
-            // Load items
-            const itemsResponse = await fetch('data/u.item');
-            const itemsText = await itemsResponse.text();
-            const itemsLines = itemsText.trim().split('\n');
-            
-            itemsLines.forEach(line => {
-                const parts = line.split('|');
-                const itemId = parseInt(parts[0]);
-                const title = parts[1];
-                const yearMatch = title.match(/\((\d{4})\)$/);
-                const year = yearMatch ? parseInt(yearMatch[1]) : null;
+            // --- Parse u.item (Movie Metadata) ---
+            itemsText.trim().split('\n').forEach(line => {
+                const fields = line.split('|');
+                const itemId = parseInt(fields[0]);
                 
-                this.items.set(itemId, {
-                    title: title.replace(/\(\d{4}\)$/, '').trim(),
-                    year: year
-                });
+                const titleMatch = fields[1].match(/(.*) \((\d{4})\)$/);
+                let title = fields[1];
+                let year = 'N/A';
+                if (titleMatch) {
+                    title = titleMatch[1];
+                    year = titleMatch[2];
+                }
+                
+                this.items.set(itemId, { itemId, title, year });
             });
+
+            // --- Parse u.data (Interactions) and Build Indexers ---
+            const rawInteractions = interactionsText.trim().split('\n')
+                .slice(0, this.config.maxInteractions) // Limit size
+                .map(line => {
+                    const [userId, itemId, rating, timestamp] = line.split('\t').map(Number);
+                    return { userId, itemId, rating, timestamp };
+                });
+
+            // Build 0-based unique indexers
+            this.userIds = [...new Set(rawInteractions.map(i => i.userId))];
+            this.itemIds = [...new Set(rawInteractions.map(i => i.itemId))].filter(id => this.items.has(id));
             
-            // Create mappings and find users with sufficient ratings
-            this.createMappings();
-            this.findQualifiedUsers();
+            this.userIds.forEach((id, index) => this.userIdxMap.set(id, index));
+            this.itemIds.forEach((id, index) => this.itemIdxMap.set(id, index));
             
-            this.updateStatus(`Loaded ${this.interactions.length} interactions and ${this.items.size} items. ${this.userTopRated.size} users have 20+ ratings.`);
+            this.interactions = rawInteractions.filter(i => this.itemIdxMap.has(i.itemId));
             
-            document.getElementById('train').disabled = false;
+            this.indexedInteractions = this.interactions.map(i => ({
+                userIdx: this.userIdxMap.get(i.userId),
+                itemIdx: this.itemIdxMap.get(i.itemId),
+            }));
             
+            // Pre-calculate user top-rated for test comparison
+            this.interactions.forEach(i => {
+                const ratings = this.userTopRated.get(i.userId) || [];
+                ratings.push({ itemId: i.itemId, rating: i.rating });
+                this.userTopRated.set(i.userId, ratings);
+            });
+
+
+            this.updateStatus(`Data loaded: ${this.userIds.length} users, ${this.itemIds.length} items, ${this.interactions.length} interactions.`);
+            this.setControls(false, false);
+
         } catch (error) {
-            this.updateStatus(`Error loading data: ${error.message}`);
+            console.error('Data Loading Error:', error);
+            this.updateStatus(`Error loading data. Check console. Ensure "data/u.data" and "data/u.item" exist.`);
+            this.setControls(false, false);
         }
     }
-    
-    createMappings() {
-        // Create user and item mappings to 0-based indices
-        const userSet = new Set(this.interactions.map(i => i.userId));
-        const itemSet = new Set(this.interactions.map(i => i.itemId));
-        
-        Array.from(userSet).forEach((userId, index) => {
-            this.userMap.set(userId, index);
-            this.reverseUserMap.set(index, userId);
-        });
-        
-        Array.from(itemSet).forEach((itemId, index) => {
-            this.itemMap.set(itemId, index);
-            this.reverseItemMap.set(index, itemId);
-        });
-        
-        // Group interactions by user and find top rated movies
-        const userInteractions = new Map();
-        this.interactions.forEach(interaction => {
-            const userId = interaction.userId;
-            if (!userInteractions.has(userId)) {
-                userInteractions.set(userId, []);
-            }
-            userInteractions.get(userId).push(interaction);
-        });
-        
-        // Sort each user's interactions by rating (desc) and timestamp (desc)
-        userInteractions.forEach((interactions, userId) => {
-            interactions.sort((a, b) => {
-                if (b.rating !== a.rating) return b.rating - a.rating;
-                return b.timestamp - a.timestamp;
-            });
-        });
-        
-        this.userTopRated = userInteractions;
-    }
-    
-    findQualifiedUsers() {
-        // Filter users with at least 20 ratings
-        const qualifiedUsers = [];
-        this.userTopRated.forEach((interactions, userId) => {
-            if (interactions.length >= 20) {
-                qualifiedUsers.push(userId);
-            }
-        });
-        this.qualifiedUsers = qualifiedUsers;
-    }
-    
+
     async train() {
-        if (this.isTraining) return;
-        
+        if (this.isTraining || !this.indexedInteractions.length) return;
         this.isTraining = true;
-        document.getElementById('train').disabled = true;
-        this.lossHistory = [];
-        
-        this.updateStatus('Initializing model...');
+        this.setControls(true, false);
+        document.getElementById('results-container').innerHTML = '';
         
         // Initialize model
         this.model = new TwoTowerModel(
-            this.userMap.size,
-            this.itemMap.size,
-            this.config.embeddingDim
+            this.userIds.length, 
+            this.itemIds.length, 
+            this.config.embeddingDim,
+            this.config.learningRate
         );
         
-        // Prepare training data
-        const userIndices = this.interactions.map(i => this.userMap.get(i.userId));
-        const itemIndices = this.interactions.map(i => this.itemMap.get(i.itemId));
+        this.lossHistory = [];
+        this.plotLoss([]); // Clear chart
+
+        const { batchSize, epochs } = this.config;
+        const numInteractions = this.indexedInteractions.length;
+        const numBatches = Math.ceil(numInteractions / batchSize);
         
-        this.updateStatus('Starting training...');
-        
-        // Training loop
-        const numBatches = Math.ceil(userIndices.length / this.config.batchSize);
-        
-        for (let epoch = 0; epoch < this.config.epochs; epoch++) {
-            let epochLoss = 0;
+        this.updateStatus(`Training started for ${epochs} epochs...`);
+
+        const userIndices = this.indexedInteractions.map(i => i.userIdx);
+        const itemIndices = this.indexedInteractions.map(i => i.itemIdx);
+
+        for (let epoch = 0; epoch < epochs; epoch++) {
+            const shuffledIndices = tf.util.createShuffledIndices(numInteractions);
             
-            for (let batch = 0; batch < numBatches; batch++) {
-                const start = batch * this.config.batchSize;
-                const end = Math.min(start + this.config.batchSize, userIndices.length);
+            let totalLoss = 0;
+
+            for (let b = 0; b < numBatches; b++) {
+                const start = b * batchSize;
+                const end = Math.min((b + 1) * batchSize, numInteractions);
+                const batchIndices = shuffledIndices.slice(start, end);
+
+                const batchUserIdx = batchIndices.map(i => userIndices[i]);
+                const batchItemIdx = batchIndices.map(i => itemIndices[i]);
                 
-                const batchUsers = userIndices.slice(start, end);
-                const batchItems = itemIndices.slice(start, end);
+                const loss = await this.model.trainStep(batchUserIdx, batchItemIdx);
+                totalLoss += loss;
                 
-                const loss = await this.model.trainStep(batchUsers, batchItems);
-                epochLoss += loss;
-                
-                this.lossHistory.push(loss);
-                this.updateLossChart();
-                
-                if (batch % 10 === 0) {
-                    this.updateStatus(`Epoch ${epoch + 1}/${this.config.epochs}, Batch ${batch}/${numBatches}, Loss: ${loss.toFixed(4)}`);
+                if (b % 50 === 0 || b === numBatches - 1) {
+                    this.updateStatus(`Epoch ${epoch + 1}/${epochs} - Batch ${b + 1}/${numBatches}. Current Loss: ${loss.toFixed(6)}`);
+                    await tf.nextFrame(); 
                 }
-                
-                // Allow UI to update
-                await new Promise(resolve => setTimeout(resolve, 0));
             }
-            
-            epochLoss /= numBatches;
-            this.updateStatus(`Epoch ${epoch + 1}/${this.config.epochs} completed. Average loss: ${epochLoss.toFixed(4)}`);
+
+            const avgLoss = totalLoss / numBatches;
+            this.lossHistory.push(avgLoss);
+            this.plotLoss(this.lossHistory);
+            this.updateStatus(`Epoch ${epoch + 1}/${epochs} completed. Avg Loss: ${avgLoss.toFixed(6)}`);
+            await tf.nextFrame();
         }
-        
+
         this.isTraining = false;
-        document.getElementById('train').disabled = false;
-        document.getElementById('test').disabled = false;
+        this.updateStatus('Training complete. Generating visualizations...');
         
-        this.updateStatus('Training completed! Click "Test" to see recommendations.');
-        
-        // Visualize embeddings
-        this.visualizeEmbeddings();
+        await this.visualizeEmbeddings();
+        this.setControls(false, true);
+        this.updateStatus('Training complete. Click "Test" for recommendations.');
     }
-    
-    updateLossChart() {
-        const canvas = document.getElementById('lossChart');
-        const ctx = canvas.getContext('2d');
+
+    plotLoss(history) {
+        const ctx = this.lossChartCtx;
+        const width = ctx.canvas.width;
+        const height = ctx.canvas.height;
         
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        
-        if (this.lossHistory.length === 0) return;
-        
-        const maxLoss = Math.max(...this.lossHistory);
-        const minLoss = Math.min(...this.lossHistory);
-        const range = maxLoss - minLoss || 1;
-        
-        ctx.strokeStyle = '#007acc';
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = '#f9f9f9';
+        ctx.fillRect(0, 0, width, height);
+
+        if (history.length === 0) return;
+
+        const maxLoss = Math.max(...history);
+        const minLoss = Math.min(...history);
+        const yRange = maxLoss - minLoss;
+        const padding = 20;
+        const plotWidth = width - 2 * padding;
+        const plotHeight = height - 2 * padding;
+
+        ctx.strokeStyle = 'blue';
         ctx.lineWidth = 2;
         ctx.beginPath();
         
-        this.lossHistory.forEach((loss, index) => {
-            const x = (index / this.lossHistory.length) * canvas.width;
-            const y = canvas.height - ((loss - minLoss) / range) * canvas.height;
-            
-            if (index === 0) {
+        history.forEach((loss, i) => {
+            const x = padding + (i / (history.length - 1)) * plotWidth;
+            const y = padding + plotHeight * (1 - (loss - minLoss) / yRange);
+            if (i === 0) {
                 ctx.moveTo(x, y);
             } else {
                 ctx.lineTo(x, y);
             }
         });
-        
         ctx.stroke();
-        
-        // Add labels
+
+        ctx.strokeStyle = '#ccc';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(padding, padding, plotWidth, plotHeight);
+
         ctx.fillStyle = '#000';
-        ctx.font = '12px Arial';
-        ctx.fillText(`Min: ${minLoss.toFixed(4)}`, 10, canvas.height - 10);
-        ctx.fillText(`Max: ${maxLoss.toFixed(4)}`, 10, 20);
+        ctx.font = '10px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText('Epoch', width / 2, height - 5);
+        ctx.textAlign = 'left';
+        ctx.fillText(maxLoss.toFixed(2), padding / 4, padding + 10);
+        ctx.fillText(minLoss.toFixed(2), padding / 4, height - padding - 5);
     }
-    
+
     async visualizeEmbeddings() {
         if (!this.model) return;
+        this.updateStatus('Computing 2D PCA projection of item embeddings...');
+
+        const { projection, sampleIndices } = await this.model.computePCAProjection(1000);
+
+        const ctx = this.embeddingChartCtx;
+        const width = ctx.canvas.width;
+        const height = ctx.canvas.height;
+        ctx.clearRect(0, 0, width, height);
+        ctx.fillStyle = '#f9f9f9';
+        ctx.fillRect(0, 0, width, height);
+
+        const xCoords = projection.map(p => p[0]);
+        const yCoords = projection.map(p => p[1]);
+        const minX = Math.min(...xCoords);
+        const maxX = Math.max(...xCoords);
+        const minY = Math.min(...yCoords);
+        const maxY = Math.max(...yCoords);
         
-        this.updateStatus('Computing embedding visualization...');
-        
-        const canvas = document.getElementById('embeddingChart');
-        const ctx = canvas.getContext('2d');
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        
-        try {
-            // Sample items for visualization
-            const sampleSize = Math.min(500, this.itemMap.size);
-            const sampleIndices = Array.from({length: sampleSize}, (_, i) => 
-                Math.floor(i * this.itemMap.size / sampleSize)
-            );
+        const padding = 40;
+        const plotWidth = width - 2 * padding;
+        const plotHeight = height - 2 * padding;
+        const xRange = maxX - minX;
+        const yRange = maxY - minY;
+
+        ctx.fillStyle = 'rgba(75, 192, 192, 0.5)';
+        const pointSize = 3;
+
+        projection.forEach(p => {
+            const x = padding + ((p[0] - minX) / xRange) * plotWidth;
+            const y = padding + plotHeight * (1 - (p[1] - minY) / yRange);
             
-            // Get embeddings and compute PCA
-            const embeddingsTensor = this.model.getItemEmbeddings();
-            const embeddings = embeddingsTensor.arraySync();
-            const sampleEmbeddings = sampleIndices.map(i => embeddings[i]);
-            
-            const projected = this.computePCA(sampleEmbeddings, 2);
-            
-            // Normalize to canvas coordinates
-            const xs = projected.map(p => p[0]);
-            const ys = projected.map(p => p[1]);
-            
-            const xMin = Math.min(...xs);
-            const xMax = Math.max(...xs);
-            const yMin = Math.min(...ys);
-            const yMax = Math.max(...ys);
-            
-            const xRange = xMax - xMin || 1;
-            const yRange = yMax - yMin || 1;
-            
-            // Draw points
-            ctx.fillStyle = 'rgba(0, 122, 204, 0.6)';
-            sampleIndices.forEach((itemIdx, i) => {
-                const x = ((projected[i][0] - xMin) / xRange) * (canvas.width - 40) + 20;
-                const y = ((projected[i][1] - yMin) / yRange) * (canvas.height - 40) + 20;
-                
-                ctx.beginPath();
-                ctx.arc(x, y, 3, 0, 2 * Math.PI);
-                ctx.fill();
+            ctx.beginPath();
+            ctx.arc(x, y, pointSize, 0, 2 * Math.PI);
+            ctx.fill();
+        });
+
+        // Add hover listener for titles
+        const canvas = ctx.canvas;
+        canvas.onmousemove = (event) => {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = event.clientX - rect.left;
+            const mouseY = event.clientY - rect.top;
+
+            let closestItem = null;
+            let minDist = Infinity;
+
+            projection.forEach((p, i) => {
+                const x = padding + ((p[0] - minX) / xRange) * plotWidth;
+                const y = padding + plotHeight * (1 - (p[1] - minY) / yRange);
+                const dist = Math.sqrt(Math.pow(mouseX - x, 2) + Math.pow(mouseY - y, 2));
+
+                if (dist < pointSize * 2 && dist < minDist) {
+                    minDist = dist;
+                    const itemIdx = sampleIndices[i];
+                    const originalId = this.itemIds[itemIdx];
+                    closestItem = this.items.get(originalId);
+                }
             });
-            
-            // Add title and labels
-            ctx.fillStyle = '#000';
-            ctx.font = '14px Arial';
-            ctx.fillText('Item Embeddings Projection (PCA)', 10, 20);
-            ctx.font = '12px Arial';
-            ctx.fillText(`Showing ${sampleSize} items`, 10, 40);
-            
-            this.updateStatus('Embedding visualization completed.');
-        } catch (error) {
-            this.updateStatus(`Error in visualization: ${error.message}`);
-        }
+
+            canvas.title = closestItem ? `${closestItem.title} (${closestItem.year})` : '';
+        };
+
+        this.updateStatus('2D Item Embeddings projection complete.');
     }
-    
-    computePCA(embeddings, dimensions) {
-        // Simple PCA using power iteration
-        const n = embeddings.length;
-        const dim = embeddings[0].length;
-        
-        // Center the data
-        const mean = Array(dim).fill(0);
-        embeddings.forEach(emb => {
-            emb.forEach((val, i) => mean[i] += val);
-        });
-        mean.forEach((val, i) => mean[i] = val / n);
-        
-        const centered = embeddings.map(emb => 
-            emb.map((val, i) => val - mean[i])
-        );
-        
-        // Compute covariance matrix
-        const covariance = Array(dim).fill(0).map(() => Array(dim).fill(0));
-        centered.forEach(emb => {
-            for (let i = 0; i < dim; i++) {
-                for (let j = 0; j < dim; j++) {
-                    covariance[i][j] += emb[i] * emb[j];
-                }
-            }
-        });
-        covariance.forEach(row => row.forEach((val, j) => row[j] = val / n));
-        
-        // Power iteration for first two components
-        const components = [];
-        for (let d = 0; d < dimensions; d++) {
-            let vector = Array(dim).fill(1/Math.sqrt(dim));
-            
-            for (let iter = 0; iter < 10; iter++) {
-                let newVector = Array(dim).fill(0);
-                
-                for (let i = 0; i < dim; i++) {
-                    for (let j = 0; j < dim; j++) {
-                        newVector[i] += covariance[i][j] * vector[j];
-                    }
-                }
-                
-                const norm = Math.sqrt(newVector.reduce((sum, val) => sum + val * val, 0));
-                vector = newVector.map(val => val / norm);
-            }
-            
-            components.push(vector);
-            
-            // Deflate the covariance matrix
-            for (let i = 0; i < dim; i++) {
-                for (let j = 0; j < dim; j++) {
-                    covariance[i][j] -= vector[i] * vector[j];
-                }
-            }
-        }
-        
-        // Project data
-        return embeddings.map(emb => {
-            return components.map(comp => 
-                emb.reduce((sum, val, i) => sum + val * comp[i], 0)
-            );
-        });
-    }
-    
+
+
     async test() {
-        if (!this.model || this.qualifiedUsers.length === 0) {
-            this.updateStatus('Model not trained or no qualified users found.');
+        if (!this.model) {
+            this.updateStatus('Please train the model first.');
             return;
         }
-        
+        this.setControls(true, true);
         this.updateStatus('Generating recommendations...');
-        
-        try {
-            // Pick random qualified user
-            const randomUser = this.qualifiedUsers[Math.floor(Math.random() * this.qualifiedUsers.length)];
-            const userInteractions = this.userTopRated.get(randomUser);
-            const userIndex = this.userMap.get(randomUser);
-            
-            // Get user embedding
-            const userEmb = this.model.getUserEmbedding(userIndex);
-            
-            // Get scores for all items
-            const allItemScores = await this.model.getScoresForAllItems(userEmb);
-            
-            // Filter out items the user has already rated
-            const ratedItemIds = new Set(userInteractions.map(i => i.itemId));
-            const candidateScores = [];
-            
-            allItemScores.forEach((score, itemIndex) => {
-                const itemId = this.reverseItemMap.get(itemIndex);
-                if (!ratedItemIds.has(itemId)) {
-                    candidateScores.push({ itemId, score, itemIndex });
-                }
-            });
-            
-            // Sort by score descending and take top 10
-            candidateScores.sort((a, b) => b.score - a.score);
-            const topRecommendations = candidateScores.slice(0, 10);
-            
-            // Display results
-            this.displayResults(randomUser, userInteractions, topRecommendations);
-            
-        } catch (error) {
-            this.updateStatus(`Error generating recommendations: ${error.message}`);
+
+        // 1. Select a random user with at least 20 ratings
+        const eligibleUsers = this.userIds.filter(id => (this.userTopRated.get(id)?.length || 0) >= 20);
+        if (eligibleUsers.length === 0) {
+            this.updateStatus('No users with 20+ ratings found for testing. Cannot proceed.');
+            this.setControls(false, true);
+            return;
         }
+
+        const randomUserOriginalId = eligibleUsers[Math.floor(Math.random() * eligibleUsers.length)];
+        const randomUserIdx = this.userIdxMap.get(randomUserOriginalId);
+        
+        // 2. Get user's top-rated movies (for comparison)
+        const userRatings = this.userTopRated.get(randomUserOriginalId) || [];
+        const topRatedMovies = userRatings
+            .sort((a, b) => b.rating - a.rating)
+            .slice(0, 10)
+            .map(r => ({
+                ...r,
+                title: this.items.get(r.itemId).title,
+                year: this.items.get(r.itemId).year,
+            }));
+
+        const alreadyRatedItemIds = new Set(userRatings.map(r => r.itemId));
+
+        // 3. Get user embedding
+        const userEmbedding = this.model.getUserEmbedding(randomUserIdx);
+
+        // 4. Compute scores against all items
+        const allScores = await this.model.getScoresForAllItems(userEmbedding); 
+        userEmbedding.dispose(); 
+
+        // 5. Build and filter recommendations
+        const recommendations = [];
+        for (let i = 0; i < allScores.length; i++) {
+            const originalItemId = this.itemIds[i];
+            
+            if (!alreadyRatedItemIds.has(originalItemId)) {
+                recommendations.push({
+                    itemId: originalItemId,
+                    score: allScores[i],
+                });
+            }
+        }
+        
+        // 6. Sort and get top 10
+        const top10Recommendations = recommendations
+            .sort((a, b) => b.score - a.score)
+            .slice(0, 10);
+        
+        // 7. Render results
+        this.renderResults(randomUserOriginalId, topRatedMovies, top10Recommendations);
+
+        this.setControls(false, true);
     }
     
-    displayResults(userId, userInteractions, recommendations) {
-        const resultsDiv = document.getElementById('results');
-        
-        const topRated = userInteractions.slice(0, 10);
+    renderResults(userId, topRated, recommendations) {
+        const resultsDiv = document.getElementById('results-container');
         
         let html = `
             <h2>Recommendations for User ${userId}</h2>
             <div class="side-by-side">
                 <div>
-                    <h3>Top 10 Rated Movies (Historical)</h3>
+                    <h3>Top 10 Rated Movies (Observed)</h3>
                     <table>
                         <thead>
                             <tr>
@@ -414,14 +376,13 @@ class MovieLensApp {
                         <tbody>
         `;
         
-        topRated.forEach((interaction, index) => {
-            const item = this.items.get(interaction.itemId);
+        topRated.forEach((rated, index) => {
             html += `
                 <tr>
                     <td>${index + 1}</td>
-                    <td>${item.title}</td>
-                    <td>${interaction.rating}</td>
-                    <td>${item.year || 'N/A'}</td>
+                    <td>${rated.title}</td>
+                    <td>${rated.rating}</td>
+                    <td>${rated.year}</td>
                 </tr>
             `;
         });
@@ -431,7 +392,7 @@ class MovieLensApp {
                     </table>
                 </div>
                 <div>
-                    <h3>Top 10 Recommended Movies</h3>
+                    <h3>Top 10 Recommended Movies (Unrated)</h3>
                     <table>
                         <thead>
                             <tr>
@@ -472,8 +433,17 @@ class MovieLensApp {
     }
 }
 
-// Initialize app when page loads
 let app;
 document.addEventListener('DOMContentLoaded', () => {
-    app = new MovieLensApp();
+    if (typeof tf === 'undefined') {
+        document.getElementById('status').textContent = 'Error: TensorFlow.js not loaded. Check network connection.';
+        return;
+    }
+    tf.setBackend('webgl').then(() => {
+        app = new MovieLensApp();
+    }).catch(e => {
+        console.warn("WebGL backend failed, falling back to CPU.", e);
+        tf.setBackend('cpu');
+        app = new MovieLensApp();
+    });
 });
