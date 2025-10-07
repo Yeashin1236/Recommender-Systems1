@@ -1,114 +1,120 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Two-Tower Recommender — Improved</title>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Two-Tower Recommender — Shallow vs Deep (Comparison)</title>
 
-  <!-- TensorFlow.js (stable) -->
+  <!-- TensorFlow.js -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.11.0/dist/tf.min.js"></script>
   <!-- D3 -->
   <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
 
   <style>
-    :root{
-      --accent:#2c7be5;
-      --muted:#9aa7b1;
-      --bg:#f6f8fb;
-      --card:#ffffff;
-      --success:#2ecc71;
-      --danger:#e74c3c;
-    }
-    body{font-family:Inter, Roboto, Arial, sans-serif;background:var(--bg);margin:0;padding:24px;color:#243240;}
-    .container{max-width:1100px;margin:0 auto}
-    h1{margin:0 0 12px;color:#1b2838}
-    .grid{display:grid;grid-template-columns:1fr 380px;gap:18px}
-    .card{background:var(--card);padding:16px;border-radius:10px;box-shadow:0 6px 18px rgba(20,30,40,0.06);border:1px solid rgba(15,25,35,0.04)}
-    .full{grid-column:1 / -1}
+    :root{--accent:#2c7be5;--muted:#7d8a97;--bg:#f6f8fb;--card:#fff}
+    body{font-family:Inter, Roboto, Arial, sans-serif;background:var(--bg);margin:18px;color:#1f2d3d}
+    .container{max-width:1200px;margin:0 auto}
+    .grid{display:grid;grid-template-columns:1fr 420px;gap:18px}
+    .card{background:var(--card);padding:16px;border-radius:10px;box-shadow:0 6px 18px rgba(20,30,40,0.06)}
+    h1{margin:0 0 12px}
     label{display:block;font-size:13px;color:var(--muted);margin-bottom:6px}
-    select,button{font-size:14px;padding:8px 10px;border-radius:8px;border:1px solid #d7e0ea;background:white}
-    button{background:var(--accent);color:white;border:none;cursor:pointer}
-    button:disabled{opacity:.55;cursor:not-allowed}
-    .status {font-weight:600;margin-left:8px}
-    .training-controls{display:flex;gap:8px;align-items:center}
-    .progress-wrapper{width:100%;background:#eef3fb;border-radius:8px;height:12px;overflow:hidden;margin-top:8px}
+    select,input[type=file],button{font-size:14px;padding:8px;border-radius:8px;border:1px solid #d7e0ea}
+    button{background:var(--accent);color:#fff;border:none;cursor:pointer}
+    button:disabled{opacity:.6;cursor:not-allowed}
+    .log{height:140px;overflow:auto;background:#0b1220;color:#cfe9ff;padding:10px;border-radius:6px;font-family:monospace;font-size:12px}
+    #visualization-container{width:100%;height:420px}
+    .progress-wrapper{background:#eef3fb;border-radius:8px;height:12px;overflow:hidden;margin-top:8px}
     .progress{height:100%;background:linear-gradient(90deg,var(--accent),#57a3ff);width:0%}
-    .log{height:160px;overflow:auto;background:#0b1220;color:#cfe9ff;padding:10px;border-radius:6px;font-family:monospace;font-size:12px}
-    .recommendations ul{list-style:none;padding:0;margin:0}
-    .recommendations li{padding:8px 6px;border-bottom:1px dashed #eef3fb}
-    #visualization-container{width:100%;height:480px}
-    .meta{font-size:13px;color:var(--muted)}
     .small{font-size:12px;color:var(--muted)}
-    .badge{display:inline-block;padding:4px 8px;border-radius:999px;background:#eef7ff;color:var(--accent);font-weight:600;margin-left:8px}
-    .center{display:flex;align-items:center;gap:8px}
+    .controls-row{display:flex;gap:8px;align-items:center}
+    .comparison-chart{height:180px;margin-top:10px}
+    .badge{display:inline-block;padding:4px 8px;border-radius:999px;background:#eef7ff;color:#1366d6;margin-left:8px}
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>Two-Tower Recommender (MovieLens 100k) — Improved 🔨🤖🔧</h1>
+    <h1>Two-Tower Recommender — Shallow vs Deep Comparison 🔨🤖🔧</h1>
 
     <div class="grid">
       <div class="card">
-        <div class="center">
-          <div>
-            <label>Data & Setup</label>
-            <div class="meta">Status: <span id="status">Loading...</span></div>
-            <div class="small">Ensure <code>u.data</code> and <code>u.item</code> sit next to this file.</div>
+        <label>Data (upload CSVs or load defaults)</label>
+        <div style="display:flex;gap:8px">
+          <div style="flex:1">
+            <input id="interactions-file" type="file" accept=".csv,.txt" />
+            <div class="small">Interactions CSV (userId,itemId,rating[,timestamp])</div>
           </div>
+          <div style="flex:1">
+            <input id="items-file" type="file" accept=".csv,.txt" />
+            <div class="small">Items CSV (itemId,title,...)</div>
+          </div>
+        </div>
+        <div style="margin-top:8px;display:flex;gap:8px">
+          <button id="load-defaults">Load defaults (u.data / u.item)</button>
+          <button id="reset-app">Reset</button>
         </div>
 
         <hr style="margin:12px 0">
 
         <div style="display:flex;gap:8px;align-items:center">
           <div style="flex:1">
-            <label for="user-select">Select User</label>
+            <label for="user-select">Select User for Recommendations</label>
             <select id="user-select" disabled></select>
           </div>
 
-          <div style="width:140px">
+          <div style="width:170px">
             <label>&nbsp;</label>
-            <button id="train-button" disabled>Train (10 epochs)</button>
+            <div style="display:flex;gap:8px">
+              <button id="train-shallow" disabled>Train Shallow</button>
+              <button id="train-deep" disabled>Train Deep</button>
+            </div>
           </div>
         </div>
 
+        <div style="margin-top:10px">
+          <div class="small">Comparison: <button id="train-both" disabled>Train Both (Shallow → Deep)</button> <span class="badge">Epochs per model: <span id="epochs-count">10</span></span></div>
+        </div>
+
         <div style="margin-top:12px">
-          <label>Training Controls</label>
-          <div class="training-controls">
-            <div class="center">
-              <div>Epoch: <span id="epoch-counter">0</span></div>
-              <div style="margin-left:12px">Loss: <span id="loss-display">N/A</span></div>
-              <div class="badge" id="train-state">Idle</div>
-            </div>
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div>Epoch: <strong id="epoch-counter">0</strong></div>
+            <div>Loss: <strong id="loss-display">N/A</strong></div>
+            <div id="train-state" class="small">State: Idle</div>
           </div>
 
-          <div class="progress-wrapper" aria-hidden="false" title="Training progress">
-            <div id="progress-bar" class="progress" style="width:0%"></div>
+          <div class="progress-wrapper">
+            <div id="progress-bar" class="progress"></div>
           </div>
+          <div class="small" style="margin-top:6px">Batch progress: <span id="batch-progress">0%</span></div>
 
-          <div style="margin-top:10px" class="small">Batch progress: <span id="batch-progress">0%</span></div>
-
-          <div style="margin-top:12px">
+          <div style="margin-top:10px">
             <label>Training Log</label>
             <div id="training-log" class="log"></div>
           </div>
         </div>
+
+        <div style="margin-top:12px">
+          <label>Loss Comparison (per epoch)</label>
+          <div id="comparison-chart" class="comparison-chart"></div>
+        </div>
       </div>
 
-      <div class="card recommendations">
-        <label>Recommendations for User <span id="current-user-id">N/A</span></label>
-        <div style="margin-top:8px" class="small">Top suggestions (filtered: items the user has rated)</div>
-        <ul id="recommendation-list" style="margin-top:8px"></ul>
-      </div>
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <label>Recommendations for User <span id="current-user-id">N/A</span></label>
+          <div class="small">Top results (filtered)</div>
+        </div>
 
-      <div class="card full">
-        <label>Item Embedding Visualization (2D PCA)</label>
-        <div id="viz-status" class="small" style="margin:6px 0">Train model to compute PCA and visualize item clusters.</div>
+        <ul id="recommendation-list" style="margin-top:8px;padding-left:14px"></ul>
+
+        <hr style="margin:12px 0">
+
+        <label>Item Embedding Visualization (PCA)</label>
+        <div id="viz-status" class="small">Train a model then click Update Viz.</div>
         <div id="visualization-container"></div>
       </div>
     </div>
   </div>
 
-  <!-- App scripts -->
   <script src="two-tower.js"></script>
   <script src="app.js"></script>
 </body>
